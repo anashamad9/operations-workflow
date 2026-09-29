@@ -228,7 +228,13 @@ function CanvasCard({
   );
 }
 
-export function PlaygroundTree() {
+export function PlaygroundTree({
+  dark,
+  onToggleTheme,
+}: {
+  dark?: boolean;
+  onToggleTheme?: () => void;
+} = {}) {
   const [nodes, setNodes] = useState<CanvasNode[]>(operationsNodes);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -533,6 +539,19 @@ export function PlaygroundTree() {
         <div className="flex shrink-0 items-center gap-1 border-l pl-2">
           <Button size="xs" variant="ghost" onClick={() => printOperations(nodes)}>Print</Button>
           <Button size="xs" variant="secondary" onClick={() => downloadOperationsPdf(nodes)}>Export PDF</Button>
+          {onToggleTheme && (
+            <Button
+              size="xs"
+              variant="ghost"
+              className="gap-1.5"
+              aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+              title={dark ? "Switch to light mode" : "Switch to dark mode"}
+              onClick={onToggleTheme}
+            >
+              <Icon name={dark ? "moon" : "sun"} size={14} />
+              {dark ? "Dark" : "Light"}
+            </Button>
+          )}
         </div>
       </nav>
       <div
