@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -35,6 +36,8 @@ const PAN_STORAGE_KEY = "operations-playground-pan-v2";
 const NODE_WIDTH = 320;
 const NODE_HEIGHT = 224;
 const VERTICAL_GAP = 70;
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 2.5;
 
 function isCanvasNode(value: unknown): value is CanvasNode {
   if (!value || typeof value !== "object") return false;
@@ -232,11 +235,36 @@ export function PlaygroundTree() {
   const [spacePressed, setSpacePressed] = useState(false);
   const [panning, setPanning] = useState(false);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
   const [loaded, setLoaded] = useState(false);
   const dragRef = useRef<DragState | null>(null);
   const panRef = useRef<PanState | null>(null);
   const nodesRef = useRef(nodes);
   const canvasRef = useRef<HTMLElement>(null);
+  const zoomRef = useRef(1);
+
+  const zoomAt = useCallback((requestedZoom: number, clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, requestedZoom));
+    const previousZoom = zoomRef.current;
+    if (Math.abs(nextZoom - previousZoom) < 0.001) return;
+    const rect = canvas.getBoundingClientRect();
+    const anchorX = clientX - rect.left;
+    const anchorY = clientY - rect.top;
+    setPanOffset((previous) => ({
+      x: anchorX - (anchorX - previous.x) * nextZoom / previousZoom,
+      y: anchorY - (anchorY - previous.y) * nextZoom / previousZoom,
+    }));
+    zoomRef.current = nextZoom;
+    setZoom(nextZoom);
+  }, []);
+
+  function zoomFromCenter(factor: number) {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    zoomAt(zoomRef.current * factor, rect.left + rect.width / 2, rect.top + rect.height / 2);
+  }
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -254,7 +282,12 @@ export function PlaygroundTree() {
         typeof savedPan.x === "number" &&
         typeof savedPan.y === "number"
       ) {
-        setPanOffset(savedPan);
+        setPanOffset({ x: savedPan.x, y: savedPan.y });
+        if (typeof savedPan.scale === "number" && Number.isFinite(savedPan.scale)) {
+          const savedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, savedPan.scale));
+          zoomRef.current = savedZoom;
+          setZoom(savedZoom);
+        }
       } else {
         const root = operationsNodes[0];
         const width = canvasRef.current?.clientWidth ?? window.innerWidth;
@@ -271,22 +304,24 @@ export function PlaygroundTree() {
   }, [loaded, nodes]);
 
   useEffect(() => {
-    if (loaded) localStorage.setItem(PAN_STORAGE_KEY, JSON.stringify(panOffset));
-  }, [loaded, panOffset]);
+    if (loaded) localStorage.setItem(PAN_STORAGE_KEY, JSON.stringify({ ...panOffset, scale: zoom }));
+  }, [loaded, panOffset, zoom]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     function panWithTouchpad(event: WheelEvent) {
-      if (event.ctrlKey) return;
-
       event.preventDefault();
       const unit = event.deltaMode === 1
         ? 16
         : event.deltaMode === 2
-          ? canvas!.clientHeight
+          ? (canvas?.clientHeight ?? window.innerHeight)
           : 1;
+      if (event.ctrlKey) {
+        zoomAt(zoomRef.current * Math.exp(-event.deltaY * unit * 0.004), event.clientX, event.clientY);
+        return;
+      }
       const horizontal = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
       const vertical = event.shiftKey && event.deltaX === 0 ? 0 : event.deltaY;
       setPanOffset((previous) => ({
@@ -297,7 +332,7 @@ export function PlaygroundTree() {
 
     canvas.addEventListener("wheel", panWithTouchpad, { passive: false, capture: true });
     return () => canvas.removeEventListener("wheel", panWithTouchpad, { capture: true });
-  }, []);
+  }, [zoomAt]);
 
   useEffect(() => {
     function isTypingTarget(target: EventTarget | null) {
@@ -313,9 +348,12 @@ export function PlaygroundTree() {
         const firstNode = nodesRef.current[0];
         if (!firstNode) return;
         event.preventDefault();
+        zoomRef.current = 1;
+        setZoom(1);
+        const canvas = canvasRef.current;
         setPanOffset({
-          x: window.innerWidth / 2 - firstNode.x - NODE_WIDTH / 2,
-          y: window.innerHeight / 2 - firstNode.y - NODE_HEIGHT / 2,
+          x: (canvas?.clientWidth ?? window.innerWidth) / 2 - firstNode.x - NODE_WIDTH / 2,
+          y: (canvas?.clientHeight ?? window.innerHeight) / 2 - firstNode.y - NODE_HEIGHT / 2,
         });
         return;
       }
@@ -361,7 +399,8 @@ export function PlaygroundTree() {
     const node = nodes.find((item) => item.id === id);
     if (!node) return;
     const width = canvasRef.current?.clientWidth ?? window.innerWidth;
-    setPanOffset({ x: width / 2 - node.x - NODE_WIDTH / 2, y: 170 - node.y });
+    const scale = zoomRef.current;
+    setPanOffset({ x: width / 2 - (node.x + NODE_WIDTH / 2) * scale, y: 170 - node.y * scale });
   }
 
   function addRoot() {
@@ -373,8 +412,8 @@ export function PlaygroundTree() {
         title: "New operation",
         description: "",
         parentId: null,
-        x: window.innerWidth / 2 - panOffset.x - NODE_WIDTH / 2,
-        y: window.innerHeight / 2 - panOffset.y - NODE_HEIGHT / 2,
+        x: ((canvasRef.current?.clientWidth ?? window.innerWidth) / 2 - panOffset.x) / zoomRef.current - NODE_WIDTH / 2,
+        y: ((canvasRef.current?.clientHeight ?? window.innerHeight) / 2 - panOffset.y) / zoomRef.current - NODE_HEIGHT / 2,
       },
     ]);
     setEditingId(id);
@@ -417,8 +456,8 @@ export function PlaygroundTree() {
   function moveDrag(event: ReactPointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
     if (!drag) return;
-    const nextX = drag.nodeX + event.clientX - drag.startX;
-    const nextY = drag.nodeY + event.clientY - drag.startY;
+    const nextX = drag.nodeX + (event.clientX - drag.startX) / zoomRef.current;
+    const nextY = drag.nodeY + (event.clientY - drag.startY) / zoomRef.current;
     setNodes((items) =>
       items.map((node) =>
         node.id === drag.id ? { ...node, x: nextX, y: nextY } : node,
@@ -477,7 +516,7 @@ export function PlaygroundTree() {
         backgroundImage:
           "radial-gradient(circle, color-mix(in srgb, var(--foreground) 13%, transparent) 1px, transparent 1px)",
         backgroundPosition: `${panOffset.x}px ${panOffset.y}px`,
-        backgroundSize: "24px 24px",
+        backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
       }}
       onPointerDown={startPan}
       onPointerMove={movePan}
@@ -499,7 +538,8 @@ export function PlaygroundTree() {
       <div
         className="absolute left-0 top-0"
         style={{
-          transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
+          transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`,
+          transformOrigin: "0 0",
         }}
       >
         <svg
@@ -575,7 +615,16 @@ export function PlaygroundTree() {
         </p>
       )}
 
-      <p className="pointer-events-none absolute bottom-5 left-4 z-30 rounded-lg bg-background/90 px-3 py-2 text-xs text-muted-foreground shadow-sm">Two-finger swipe or drag empty space to move · Drag a card header to move a node</p>
+      <p className="pointer-events-none absolute bottom-5 left-4 z-30 rounded-lg bg-background/90 px-3 py-2 text-xs text-muted-foreground shadow-sm">Two-finger swipe to move · Pinch to zoom · Drag a card header to move a node</p>
+
+      <div className="absolute bottom-20 right-5 z-30 flex items-center gap-1 rounded-xl border bg-background/95 p-1 shadow-lg" role="group" aria-label="Canvas zoom controls">
+        <Button size="icon-xs" variant="ghost" aria-label="Zoom out" title="Zoom out" disabled={zoom <= MIN_ZOOM} onClick={() => zoomFromCenter(1 / 1.2)}>−</Button>
+        <Button size="xs" variant="ghost" className="min-w-12 tabular-nums" aria-label={`Reset zoom, currently ${Math.round(zoom * 100)} percent`} title="Reset zoom to 100%" onClick={() => {
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (rect) zoomAt(1, rect.left + rect.width / 2, rect.top + rect.height / 2);
+        }}>{Math.round(zoom * 100)}%</Button>
+        <Button size="icon-xs" variant="ghost" aria-label="Zoom in" title="Zoom in" disabled={zoom >= MAX_ZOOM} onClick={() => zoomFromCenter(1.2)}>+</Button>
+      </div>
 
       <Button
         size="icon-xl"
